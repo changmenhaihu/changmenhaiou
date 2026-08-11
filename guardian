@@ -1,0 +1,10 @@
+#!/bin/bash
+# Spring Boot Guardian CLI 包装脚本
+# 用法: guardian check --project /path/to/project [其他选项]
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+JAR_PATH="$SCRIPT_DIR/target/spring-boot-guardian-1.0.0-jar-with-dependencies.jar"
+if [ ! -f "$JAR_PATH" ]; then
+  echo "错误：找不到 guardian.jar，请先执行 mvn clean package -DskipTests"
+  exit 1
+fi
+java -jar "$JAR_PATH" "$@"

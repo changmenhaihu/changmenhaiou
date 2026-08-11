@@ -1,0 +1,17 @@
+<configuration>
+    <!--
+      控制台编码与 System.out 保持一致：GuardianApplication 启动时写入系统属性
+      guardian.console.charset（控制台=原生编码如 GBK，管道/重定向=UTF-8）。
+      未设置时（如直接运行于 CI）默认 UTF-8。
+    -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+            <charset>${guardian.console.charset:-UTF-8}</charset>
+        </encoder>
+    </appender>
+
+    <root level="info">
+        <appender-ref ref="STDOUT" />
+    </root>
+</configuration>
