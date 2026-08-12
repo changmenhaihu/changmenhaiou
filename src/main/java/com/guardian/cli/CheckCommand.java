@@ -5,16 +5,33 @@ import com.guardian.ai.Intent;
 import com.guardian.ai.IntentParser;
 import com.guardian.config.GuardianConfig;
 import com.guardian.diff.DiffPrinter;
+import com.guardian.diff.HealthReportPrinter;
+import com.guardian.diff.InspectionPrinter;
 import com.guardian.rewrite.JakartaMigrationService;
 import com.guardian.rewrite.SpringBootUpgradeService;
+import com.guardian.rewrite.recipes.CodeHealthCompositeRecipe;
+import com.guardian.rewrite.recipes.SystemOutInspection;
+import org.openrewrite.ExecutionContext;
+import org.openrewrite.InMemoryExecutionContext;
+import org.openrewrite.Recipe;
+import org.openrewrite.Result;
+import org.openrewrite.SourceFile;
+import org.openrewrite.internal.InMemoryLargeSourceSet;
+import org.openrewrite.java.JavaParser;
+import org.openrewrite.properties.PropertiesParser;
+import org.openrewrite.yaml.YamlParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.stream.Stream;
 
 /**
  * guardian check 子命令：扫描目标 Spring Boot 项目并输出修改建议。
@@ -32,7 +49,7 @@ public class CheckCommand implements Callable<Integer> {
     @Option(names = "--project", required = true, description = "目标 Spring Boot 项目路径")
     private Path project;
 
-    @Option(names = "--action", description = "显式动作：javax-to-jakarta / spring-boot-upgrade")
+    @Option(names = "--action", description = "显式动作：javax-to-jakarta / spring-boot-upgrade / code-style / code-health")
     private String action;
 
     @Option(names = "--apply", defaultValue = "false", description = "真正写入磁盘（默认仅 dry-run 预览）")
@@ -67,6 +84,10 @@ public class CheckCommand implements Callable<Integer> {
                     .anyMatch(i -> Intent.SPRING_BOOT_UPGRADE.equals(i.name()));
             boolean jakartaMigration = intents.stream()
                     .anyMatch(i -> Intent.JAKARTA_MIGRATION.equals(i.name()));
+            boolean codeStyle = intents.stream()
+                    .anyMatch(i -> Intent.CODE_STYLE.equals(i.name()));
+            boolean codeHealth = intents.stream()
+                    .anyMatch(i -> Intent.CODE_HEALTH.equals(i.name()));
 
             if (springBootUpgrade) {
                 log.info("执行 Spring Boot 2.7 → 3.x 完整升级（组合配方）...");
@@ -74,9 +95,20 @@ public class CheckCommand implements Callable<Integer> {
                 var results = service.execute(project, apply);
                 DiffPrinter.print(results, apply);
             } else if (jakartaMigration) {
+                log.info("执行 javax → jakarta 迁移...");
                 JakartaMigrationService service = new JakartaMigrationService();
                 var results = service.execute(project, apply);
                 DiffPrinter.print(results, apply);
+            } else if (codeHealth) {
+                log.info("执行代码健康检查（代码规范 + 架构腐化检测）...");
+                var recipe = new CodeHealthCompositeRecipe();
+                List<Result> results = executeRecipe(project, recipe, false);
+                HealthReportPrinter.print(results);
+            } else if (codeStyle) {
+                log.info("执行代码规范检测...");
+                var recipe = new SystemOutInspection();
+                List<Result> results = executeRecipe(project, recipe, false);
+                InspectionPrinter.print(results);
             } else {
                 // 兼容旧行为：无法识别的意图回退到默认 Jakarta 迁移
                 log.warn("未能识别可执行意图（{}），回退到默认 Jakarta 迁移", intents);
@@ -95,10 +127,81 @@ public class CheckCommand implements Callable<Integer> {
         }
     }
 
+    /**
+     * 通用 Recipe 执行方法：扫描目标项目的 Java / properties / yaml 源文件，
+     * 应用 Recipe（含检测类配方），返回全部结果。检测类 Recipe 默认不写盘。
+     */
+    private List<Result> executeRecipe(Path projectDir, Recipe recipe, boolean apply) throws IOException {
+        List<SourceFile> sourceFiles = parseProjectSources(projectDir);
+        if (sourceFiles.isEmpty()) {
+            log.warn("目标项目中没有找到可解析的源文件");
+            return List.of();
+        }
+        ExecutionContext ctx = new InMemoryExecutionContext();
+        var run = recipe.run(new InMemoryLargeSourceSet(sourceFiles), ctx);
+        return run.getChangeset().getAllResults();
+    }
+
+    /** 扫描并解析目标项目的 Java / properties / yaml 源文件（跳过 target / .git 等目录） */
+    private List<SourceFile> parseProjectSources(Path projectDir) throws IOException {
+        List<Path> javaFiles = new ArrayList<>();
+        List<Path> propertiesFiles = new ArrayList<>();
+        List<Path> yamlFiles = new ArrayList<>();
+
+        try (Stream<Path> stream = Files.walk(projectDir)) {
+            stream.filter(Files::isRegularFile)
+                    .filter(this::isNotExcluded)
+                    .forEach(path -> {
+                        String name = path.getFileName().toString().toLowerCase();
+                        if (name.endsWith(".java")) {
+                            javaFiles.add(path);
+                        } else if (name.endsWith(".properties")) {
+                            propertiesFiles.add(path);
+                        } else if (name.endsWith(".yml") || name.endsWith(".yaml")) {
+                            yamlFiles.add(path);
+                        }
+                    });
+        }
+
+        ExecutionContext ctx = new InMemoryExecutionContext();
+        List<SourceFile> sources = new ArrayList<>();
+        if (!javaFiles.isEmpty()) {
+            JavaParser.fromJavaVersion().build()
+                    .parse(javaFiles, projectDir, ctx).forEach(sources::add);
+        }
+        if (!propertiesFiles.isEmpty()) {
+            PropertiesParser.builder().build()
+                    .parse(propertiesFiles, projectDir, ctx).forEach(sources::add);
+        }
+        if (!yamlFiles.isEmpty()) {
+            YamlParser.builder().build()
+                    .parse(yamlFiles, projectDir, ctx).forEach(sources::add);
+        }
+        return sources;
+    }
+
+    /** 是否应跳过（target 构建输出、.git、node_modules 等） */
+    private boolean isNotExcluded(Path path) {
+        for (Path part : path) {
+            String name = part.toString();
+            if (name.equals("target") || name.equals(".git") || name.equals("node_modules")
+                    || name.equals("build") || name.equals(".idea") || name.equals(".mvn")) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** 解析要执行的意图列表：AI 模式失败时优雅降级到无 AI 默认迁移 */
     private List<Intent> resolveIntents() {
         if (instruction != null && !instruction.isBlank()) {
             return resolveFromAI();
+        }
+        if ("code-style".equalsIgnoreCase(action)) {
+            return List.of(Intent.codeStyle());
+        }
+        if ("code-health".equalsIgnoreCase(action)) {
+            return List.of(Intent.codeHealth());
         }
         // 无 AI 模式：--action 显式指定意图，缺省默认 Jakarta 迁移
         if (action != null && !action.isBlank()) {
@@ -108,7 +211,7 @@ public class CheckCommand implements Callable<Integer> {
             if ("javax-to-jakarta".equalsIgnoreCase(action)) {
                 return List.of(Intent.jakartaMigration());
             }
-            log.warn("未知动作 '{}'，当前支持 javax-to-jakarta 与 spring-boot-upgrade，将使用默认 Jakarta 迁移", action);
+            log.warn("未知动作 '{}'，当前支持 javax-to-jakarta / spring-boot-upgrade / code-style / code-health，将使用默认 Jakarta 迁移", action);
             return List.of(Intent.jakartaMigration());
         }
         return List.of(Intent.jakartaMigration());

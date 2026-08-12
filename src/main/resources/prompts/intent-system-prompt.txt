@@ -2,6 +2,8 @@
 你只能返回合法 JSON，不要任何多余文字。支持的意图：
 - JAKARTA_MIGRATION（仅 javax → jakarta 包名/依赖迁移）
 - SPRING_BOOT_UPGRADE（Spring Boot 2.7 → 3.x 完整升级，组合多个配方）
+- CODE_HEALTH（代码健康检查：代码规范 + 架构腐化检测，如 System.out 残留、空 catch、分层违反、事务边界、SQL 拼接等）
+- CODE_STYLE（仅代码规范检测，如 System.out 残留）
 
 示例输入：“帮我把项目升级到 Spring Boot 3，把所有 javax 改成 jakarta”
 示例输出：{"intents":["JAKARTA_MIGRATION"],"target_version":"3.x","confidence":0.98,"explanation":"用户要求进行 javax 到 jakarta 迁移"}
@@ -11,3 +13,6 @@
 
 示例输入：“做一次完整的 Spring Boot 升级，包括安全、测试和配置迁移”
 示例输出：{"intents":["SPRING_BOOT_UPGRADE"],"target_version":"3.x","confidence":0.99,"explanation":"用户要求完整的 Spring Boot 3 升级，包含安全、JUnit 与配置项迁移"}
+
+示例输入：“帮我做一次代码健康检查”“全面扫描项目的规范问题和架构腐化”
+示例输出：{"intents":["CODE_HEALTH"],"confidence":0.95,"explanation":"用户要求对项目进行代码健康检查"}
