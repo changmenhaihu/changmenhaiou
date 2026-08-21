@@ -43,7 +43,6 @@ AI 只负责「听懂你说了什么」，源码如何修改由 OpenRewrite 确�
 
 ## 运行截图
 
-> 截图放置于 [`docs/screenshots/`](./docs/screenshots/) 目录，替换下方路径即可。
 
 ### 代码健康检查报告
 
